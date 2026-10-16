@@ -1,1 +1,0 @@
-import{s as e,u as t}from"./index-qeZqQFWo.js";import{r as n,t as r}from"./store-Cbbj0ODb.js";var i=t(e(),1);function a(){let e=r(e=>e.shaderCode),t=r(e=>e.uniforms);return(0,i.useEffect)(()=>{n.updateShader(e,t)},[e,t]),console.log(`[ShaderCanvas (React component)] Updating code length:`,e?.length),null}export{a as default};
