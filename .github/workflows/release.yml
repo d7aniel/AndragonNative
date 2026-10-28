@@ -1,0 +1,102 @@
+name: Create Release
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  check-release:
+    name: Check Version and Release Status
+    runs-on: ubuntu-latest
+    outputs:
+      version: ${{ steps.version_info.outputs.version }}
+      tag: ${{ steps.version_info.outputs.tag }}
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Determine Version and Tag
+        id: version_info
+        run: |
+          VERSION=$(grep '^version =' src-tauri/Cargo.toml | head -n 1 | cut -d '"' -f 2)
+          if [ -z "$VERSION" ]; then
+            echo "::error::Could not extract version from src-tauri/Cargo.toml"
+            exit 1
+          fi
+          TAG="v$VERSION"
+          echo "version=$VERSION" >> "$GITHUB_OUTPUT"
+          echo "tag=$TAG" >> "$GITHUB_OUTPUT"
+          echo "Detected version: $VERSION"
+          echo "Target git tag: $TAG"
+
+      - name: Check or create Git Tag
+        env:
+          TAG: ${{ steps.version_info.outputs.tag }}
+        run: |
+          if git rev-parse "$TAG" >/dev/null 2>&1 || git ls-remote --tags origin "refs/tags/$TAG" | grep -q "$TAG"; then
+            echo "Tag $TAG already exists."
+          else
+            echo "Tag $TAG does not exist. Creating and pushing tag $TAG..."
+            git config user.name "github-actions[bot]"
+            git config user.email "github-actions[bot]@users.noreply.github.com"
+            git tag -a "$TAG" -m "Release $TAG"
+            git push origin "$TAG"
+            echo "Tag $TAG created and pushed."
+          fi
+
+      - name: Check if GitHub Release already exists
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          TAG: ${{ steps.version_info.outputs.tag }}
+        run: |
+          if gh release view "$TAG" >/dev/null 2>&1; then
+            echo "::error::Release $TAG already exists on GitHub! Aborting release process."
+            exit 1
+          fi
+          echo "No release found for $TAG. Ready to build binaries."
+
+  build-macos:
+    name: Build macOS
+    needs: check-release
+    uses: ./.github/workflows/build-macos.yml
+
+  build-windows-linux:
+    name: Build Windows & Linux
+    needs: check-release
+    uses: ./.github/workflows/build-windows-linux.yml
+
+  publish-release:
+    name: Publish GitHub Release
+    needs: [check-release, build-macos, build-windows-linux]
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Download all build artifacts
+        uses: actions/download-artifact@v4
+        with:
+          path: downloaded_artifacts
+
+      - name: Collect release assets
+        run: |
+          mkdir -p release_assets
+          # Find all .dmg and .zip files from downloaded artifacts
+          find downloaded_artifacts -type f \( -name "*.dmg" -o -name "*.zip" \) -exec cp {} release_assets/ \;
+          echo "Collected release assets:"
+          ls -lh release_assets/
+
+      - name: Publish Release to GitHub
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          TAG: ${{ needs.check-release.outputs.tag }}
+        run: |
+          gh release create "$TAG" release_assets/* \
+            --title "Andragon $TAG" \
+            --generate-notes

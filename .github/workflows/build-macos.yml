@@ -2,6 +2,7 @@ name: Build macOS Desktop App
 
 on:
   workflow_dispatch:
+  workflow_call:
 
 jobs:
   build-macos:
@@ -25,16 +26,43 @@ jobs:
         with:
           workspaces: './src-tauri -> target'
 
-      - name: Build Tauri app
-        run: npx @tauri-apps/cli build
+      - name: Build Tauri app (App bundle only)
+        # We tell Tauri to build just the bundle app, avoiding automatic DMG packaging before signing
+        run: npx --yes @tauri-apps/cli build --bundles app
 
-      - name: Upload macOS bundle
+      - name: Sign App Bundle (Ad-hoc)
+        # This applies a local ad-hoc signature so macOS recognizes the bundle structure and allows the "Open Anyway" prompt
+        run: |
+          codesign --force --deep -s - src-tauri/target/release/bundle/macos/Andragon.app
+          # Verify that the bundle seal is strictly valid
+          codesign --verify --deep --strict --verbose=2 src-tauri/target/release/bundle/macos/Andragon.app
+
+      - name: Create DMG using native macOS tools
+        # We use macOS's native hdiutil to pack the signed .app into a clean DMG
+        run: |
+          DMG_NAME="Andragon-macOS.dmg"
+          APP_PATH="src-tauri/target/release/bundle/macos/Andragon.app"
+          
+          # Create a temporary folder for staging the DMG contents
+          mkdir -p dist_dmg
+          # Use ditto to preserve permissions, symlinks, and code signature integrity
+          ditto "$APP_PATH" "dist_dmg/Andragon.app"
+          ln -s /Applications dist_dmg/Applications
+          
+          # Generate the final compressed DMG image
+          hdiutil create -volname "Andragon" \
+                         -srcfolder dist_dmg \
+                         -ov -format UDZO \
+                         "$DMG_NAME"
+          
+          # Move DMG to Tauri's expected output path for consistency
+          mkdir -p src-tauri/target/release/bundle/dmg
+          mv "$DMG_NAME" src-tauri/target/release/bundle/dmg/
+
+      - name: Upload macOS DMG
         uses: actions/upload-artifact@v4
         with:
-          name: macos-bundle
+          name: Andragon-macOS
           path: |
             src-tauri/target/release/bundle/dmg/*.dmg
-            src-tauri/target/release/bundle/macos/*.app
-            src-tauri/target/*/release/bundle/dmg/*.dmg
-            src-tauri/target/*/release/bundle/macos/*.app
           if-no-files-found: error
